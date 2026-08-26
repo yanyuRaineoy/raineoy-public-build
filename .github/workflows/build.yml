@@ -96,6 +96,10 @@ jobs:
           go get -tool golang.org/x/mobile/cmd/gobind
           gomobile bind -target=ios -iosversion=15.0 -o "$APP_DIR/ios/Frameworks/Anytlsbridge.xcframework" ./bridge
           test -s "$APP_DIR/ios/Frameworks/Anytlsbridge.xcframework/Info.plist"
+          bridge_header="$(find "$APP_DIR/ios/Frameworks/Anytlsbridge.xcframework" -type f -name '*.h' -print -quit)"
+          test -n "$bridge_header"
+          grep -q "BridgeStart" "$bridge_header"
+          sed -i '' -e 's/AnytlsbridgeStart/BridgeStart/g' -e 's/AnytlsbridgeStop/BridgeStop/g' "$APP_DIR/ios/XrayTunnel/PacketTunnelProvider.swift"
 
       - name: 配置并校验 iOS OAuth
         working-directory: ${{ env.APP_DIR }}
@@ -171,7 +175,7 @@ jobs:
           grep -q "group.love.raineoy.app" ios/Runner/Runner.entitlements
           grep -q "group.love.raineoy.app" ios/XrayTunnel/XrayTunnel.entitlements
           grep -q "Anytlsbridge.xcframework in Frameworks" ios/Runner.xcodeproj/project.pbxproj
-          grep -q "AnytlsbridgeStart" ios/XrayTunnel/PacketTunnelProvider.swift
+          grep -q "BridgeStart" ios/XrayTunnel/PacketTunnelProvider.swift
 
       - name: 构建未签名 iOS 应用
         shell: bash
@@ -230,7 +234,7 @@ jobs:
           /usr/bin/lipo -info "$packaged_extension/$tunnel_exec" | grep -q arm64
           strings "$packaged/Frameworks/App.framework/App" | grep -q "love.raineoy.app.XrayTunnel"
           strings "$packaged_extension/$tunnel_exec" | grep -q "anytls/0.0.13"
-          strings "$packaged_extension/$tunnel_exec" | grep -q "AnytlsbridgeStart"
+          strings "$packaged_extension/$tunnel_exec" | grep -q "BridgeStart"
           test ! -d "$packaged/_CodeSignature"
           test ! -d "$packaged_extension/_CodeSignature"
           cd "$package_dir"
