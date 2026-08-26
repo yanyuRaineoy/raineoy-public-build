@@ -67,6 +67,18 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: flutter pub get
 
+      - name: 兼容 flutter_vless iOS SwiftPM 路径
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          plugin_root="$(find "$PUB_CACHE/hosted/pub.dev" -maxdepth 1 -type d -name 'flutter_vless-1.1.5' -print -quit)"
+          test -n "$plugin_root"
+          test -s "$plugin_root/ios/flutter_vless/Package.swift"
+          mkdir -p ios/.symlinks/plugins
+          ln -sfn "$plugin_root" ios/.symlinks/plugins/flutter_vless
+          test -s ios/.symlinks/plugins/flutter_vless/ios/flutter_vless/Package.swift
+
       - name: 构建 AnyTLS iOS 静态框架
         shell: bash
         run: |
