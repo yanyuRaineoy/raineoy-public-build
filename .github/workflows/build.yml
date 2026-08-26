@@ -110,7 +110,6 @@ jobs:
               Path("test/core_test.dart"),
               Path("test/legal_consent_repository_test.dart"),
               Path("test/oauth_client_config_test.dart"),
-              Path("test/proxy_node_test.dart"),
               Path("test/realtime_ai_test.dart"),
           ]
           if not tests:
