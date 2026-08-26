@@ -230,9 +230,9 @@ jobs:
           tunnel_exec="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$packaged_extension/Info.plist")"
           /usr/bin/lipo -info "$packaged/$main_exec" | grep -q arm64
           /usr/bin/lipo -info "$packaged_extension/$tunnel_exec" | grep -q arm64
-          strings "$packaged/Frameworks/App.framework/App" | grep -q "love.raineoy.app.XrayTunnel"
-          strings "$packaged_extension/$tunnel_exec" | grep -q "anytls/0.0.13"
-          strings "$packaged_extension/$tunnel_exec" | grep -q "BridgeStart"
+          grep -a -q "love.raineoy.app.XrayTunnel" "$packaged/Frameworks/App.framework/App"
+          grep -a -q "anytls/0.0.13" "$packaged_extension/$tunnel_exec"
+          grep -a -q "BridgeStart" "$packaged_extension/$tunnel_exec"
           test ! -d "$packaged/_CodeSignature"
           test ! -d "$packaged_extension/_CodeSignature"
           cd "$package_dir"
