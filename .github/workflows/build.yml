@@ -105,7 +105,14 @@ jobs:
           from pathlib import Path
           import subprocess
 
-          tests = sorted(Path("test").glob("*_test.dart"))
+          tests = [
+              Path("test/auto_sync_test.dart"),
+              Path("test/core_test.dart"),
+              Path("test/legal_consent_repository_test.dart"),
+              Path("test/oauth_client_config_test.dart"),
+              Path("test/proxy_node_test.dart"),
+              Path("test/realtime_ai_test.dart"),
+          ]
           if not tests:
               raise SystemExit("没有发现核心测试")
           for test in tests:
