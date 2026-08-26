@@ -1,0 +1,235 @@
+name: 构建 Raineoy 0.4.3 build15 未签名 IPA
+# source payload: a685c6962a6783aa1750f769953a8f01e4bf2503698449c504ea66fe61c4f892
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build15.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raineoy-ios-build15-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    name: 校验、编译与打包
+    runs-on: macos-15
+    timeout-minutes: 55
+
+    steps:
+      - name: 读取构建载荷
+        uses: actions/checkout@v4
+
+      - name: 还原并校验源码
+        shell: bash
+        run: |
+          set -euo pipefail
+          encoded="$RUNNER_TEMP/raineoy-source.b64"
+          archive="$RUNNER_TEMP/raineoy-source.tar.xz"
+          cat source.tar.xz.b64.part-* > "$encoded"
+          base64 --decode -i "$encoded" -o "$archive"
+          expected="$(awk '{print $1}' source.sha256)"
+          actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          app_dir="$RUNNER_TEMP/raineoy-app"
+          mkdir -p "$app_dir"
+          tar -xJf "$archive" -C "$app_dir"
+          test -s "$app_dir/pubspec.yaml"
+          echo "APP_DIR=$app_dir" >> "$GITHUB_ENV"
+          echo "SOURCE_ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+          cache: true
+
+      - name: 安装 Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: 显示构建环境
+        run: |
+          flutter --version
+          xcodebuild -version
+          go version
+
+      - name: 获取 Flutter 依赖
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter pub get
+
+      - name: 构建 AnyTLS iOS 静态框架
+        shell: bash
+        run: |
+          set -euo pipefail
+          anytls_dir="$RUNNER_TEMP/anytls-go"
+          git clone --depth 1 --branch v0.0.13 https://github.com/anytls/anytls-go.git "$anytls_dir"
+          mkdir -p "$anytls_dir/bridge" "$APP_DIR/ios/Frameworks"
+          cp "$APP_DIR/ios/AnyTLSBridge/bridge.go" "$anytls_dir/bridge/bridge.go"
+          gofmt -w "$anytls_dir/bridge/bridge.go"
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile init
+          cd "$anytls_dir"
+          go get -tool golang.org/x/mobile/cmd/gobind
+          gomobile bind -target=ios -iosversion=15.0 -o "$APP_DIR/ios/Frameworks/Anytlsbridge.xcframework" ./bridge
+          test -s "$APP_DIR/ios/Frameworks/Anytlsbridge.xcframework/Info.plist"
+
+      - name: 配置并校验 iOS OAuth
+        working-directory: ${{ env.APP_DIR }}
+        env:
+          GOOGLE_IOS_CLIENT_ID: 225158218626-vk4tdf7lk3052kou1uua17t8o0aa4lbt.apps.googleusercontent.com
+          GOOGLE_SERVER_CLIENT_ID: ${{ secrets.GOOGLE_SERVER_CLIENT_ID || vars.GOOGLE_SERVER_CLIENT_ID }}
+          MICROSOFT_GLOBAL_CLIENT_ID: 8fdea0ec-abd7-4b59-8cfb-687a0df191f1
+          MICROSOFT_CHINA_CLIENT_ID: ${{ secrets.MICROSOFT_CHINA_CLIENT_ID || vars.MICROSOFT_CHINA_CLIENT_ID }}
+        run: python3 tool/configure_ios_oauth.py --require-google --require-microsoft-global
+
+      - name: 静态检查
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter analyze
+
+      - name: 运行核心测试
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          tests = sorted(Path("test").glob("*_test.dart"))
+          if not tests:
+              raise SystemExit("没有发现核心测试")
+          for test in tests:
+              print(f"\n===== {test} =====", flush=True)
+              try:
+                  completed = subprocess.run(
+                      [
+                          "flutter",
+                          "test",
+                          "--reporter",
+                          "expanded",
+                          "--timeout",
+                          "3m",
+                          str(test),
+                      ],
+                      check=True,
+                      timeout=120,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                  )
+                  print(completed.stdout, end="", flush=True)
+              except subprocess.TimeoutExpired as error:
+                  output = error.stdout or ""
+                  if isinstance(output, bytes):
+                      output = output.decode("utf-8", errors="replace")
+                  print(output, end="", flush=True)
+                  if "All tests passed!" in output:
+                      print(f"测试断言通过但 runner 未退出：{test}", flush=True)
+                      continue
+                  raise SystemExit(f"测试超时：{test}") from error
+              except subprocess.CalledProcessError as error:
+                  print(error.stdout or "", end="", flush=True)
+                  raise
+          PY
+
+      - name: 校验 VPN 工程声明
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          grep -q "love.raineoy.app.XrayTunnel" lib/services/proxy_runtime.dart
+          grep -q "packet-tunnel-provider" ios/Runner/Runner.entitlements
+          grep -q "packet-tunnel-provider" ios/XrayTunnel/XrayTunnel.entitlements
+          grep -q "group.love.raineoy.app" ios/Runner/Runner.entitlements
+          grep -q "group.love.raineoy.app" ios/XrayTunnel/XrayTunnel.entitlements
+          grep -q "Anytlsbridge.xcframework in Frameworks" ios/Runner.xcodeproj/project.pbxproj
+          grep -q "AnytlsbridgeStart" ios/XrayTunnel/PacketTunnelProvider.swift
+
+      - name: 构建未签名 iOS 应用
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        env:
+          GOOGLE_IOS_CLIENT_ID: 225158218626-vk4tdf7lk3052kou1uua17t8o0aa4lbt.apps.googleusercontent.com
+          GOOGLE_SERVER_CLIENT_ID: ${{ secrets.GOOGLE_SERVER_CLIENT_ID || vars.GOOGLE_SERVER_CLIENT_ID }}
+          MICROSOFT_GLOBAL_CLIENT_ID: 8fdea0ec-abd7-4b59-8cfb-687a0df191f1
+          MICROSOFT_CHINA_CLIENT_ID: ${{ secrets.MICROSOFT_CHINA_CLIENT_ID || vars.MICROSOFT_CHINA_CLIENT_ID }}
+        run: |
+          set +e
+          flutter build ios --release --no-codesign --build-name=0.4.3 --build-number=15 \
+            --dart-define=GOOGLE_IOS_CLIENT_ID="$GOOGLE_IOS_CLIENT_ID" \
+            --dart-define=GOOGLE_SERVER_CLIENT_ID="$GOOGLE_SERVER_CLIENT_ID" \
+            --dart-define=MICROSOFT_GLOBAL_CLIENT_ID="$MICROSOFT_GLOBAL_CLIENT_ID" \
+            --dart-define=MICROSOFT_CHINA_CLIENT_ID="$MICROSOFT_CHINA_CLIENT_ID"
+          flutter_status=$?
+          set -e
+          if (( flutter_status != 0 )); then
+            xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' \
+              -derivedDataPath "$PWD/build/ios/unsigned" \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="" build
+            app_path="$(find "$PWD/build/ios/unsigned/Build/Products" -type d -name '*.app' -not -path '*/Pods/*' -print -quit)"
+          else
+            app_path="$(find "$PWD/build/ios" -type d -name '*.app' -not -path '*/Pods/*' -print -quit)"
+          fi
+          test -n "$app_path"
+          echo "UNSIGNED_APP_PATH=$app_path" >> "$GITHUB_ENV"
+
+      - name: 生成并深度校验 IPA
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          app_path="$UNSIGNED_APP_PATH"
+          extension_path="$app_path/PlugIns/XrayTunnel.appex"
+          test -d "$extension_path"
+          /usr/bin/codesign --remove-signature "$extension_path" 2>/dev/null || true
+          /usr/bin/codesign --remove-signature "$app_path" 2>/dev/null || true
+          rm -f "$app_path/embedded.mobileprovision" "$extension_path/embedded.mobileprovision"
+          package_dir="$RUNNER_TEMP/raineoy-ipa"
+          mkdir -p "$package_dir/Payload"
+          ditto "$app_path" "$package_dir/Payload/Raineoy.app"
+          packaged="$package_dir/Payload/Raineoy.app"
+          packaged_extension="$packaged/PlugIns/XrayTunnel.appex"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$packaged/Info.plist")" = "love.raineoy.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$packaged/Info.plist")" = "0.4.3"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$packaged/Info.plist")" = "15"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$packaged_extension/Info.plist")" = "love.raineoy.app.XrayTunnel"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$packaged_extension/Info.plist")" = "com.apple.networkextension.packet-tunnel"
+          main_exec="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$packaged/Info.plist")"
+          tunnel_exec="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$packaged_extension/Info.plist")"
+          /usr/bin/lipo -info "$packaged/$main_exec" | grep -q arm64
+          /usr/bin/lipo -info "$packaged_extension/$tunnel_exec" | grep -q arm64
+          strings "$packaged/Frameworks/App.framework/App" | grep -q "love.raineoy.app.XrayTunnel"
+          strings "$packaged_extension/$tunnel_exec" | grep -q "anytls/0.0.13"
+          strings "$packaged_extension/$tunnel_exec" | grep -q "AnytlsbridgeStart"
+          test ! -d "$packaged/_CodeSignature"
+          test ! -d "$packaged_extension/_CodeSignature"
+          cd "$package_dir"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-unsigned.ipa" Payload
+          /usr/bin/unzip -t "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-unsigned.ipa"
+          /usr/bin/shasum -a 256 "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-unsigned.ipa" | tee "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-unsigned.ipa.sha256"
+          cp "$SOURCE_ARCHIVE" "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-source.tar.xz"
+          /usr/bin/shasum -a 256 "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-source.tar.xz" | tee "$GITHUB_WORKSPACE/Raineoy-0.4.3-build15-source.tar.xz.sha256"
+
+      - name: 上传最终产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: Raineoy-0.4.3-build15-final
+          path: |
+            Raineoy-0.4.3-build15-unsigned.ipa
+            Raineoy-0.4.3-build15-unsigned.ipa.sha256
+            Raineoy-0.4.3-build15-source.tar.xz
+            Raineoy-0.4.3-build15-source.tar.xz.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
