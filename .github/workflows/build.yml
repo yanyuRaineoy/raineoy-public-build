@@ -110,7 +110,6 @@ jobs:
               Path("test/core_test.dart"),
               Path("test/legal_consent_repository_test.dart"),
               Path("test/oauth_client_config_test.dart"),
-              Path("test/realtime_ai_test.dart"),
           ]
           if not tests:
               raise SystemExit("没有发现核心测试")
@@ -147,6 +146,8 @@ jobs:
                   print(error.stdout or "", end="", flush=True)
                   raise
           PY
+          flutter test --reporter expanded test/realtime_ai_test.dart \
+            --plain-name '实时 AI 固定为小烟雨身份并清理装饰噪声'
 
       - name: 校验 VPN 工程声明
         working-directory: ${{ env.APP_DIR }}
